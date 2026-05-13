@@ -361,11 +361,6 @@ body{font-family:Georgia,serif;background:var(--bg);color:var(--text);font-size:
       🦴 Bonesetter
     </button>
     <span id="topbar-user" style="font-family:sans-serif;font-size:11px;color:var(--text2);padding:4px 8px;background:var(--surface2);border-radius:var(--radius);cursor:default"></span>
-    <button onclick="manualRefresh()" id="btn-refresh"
-      style="font-family:sans-serif;font-size:13px;padding:4px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--surface);cursor:pointer"
-      title="Aggiorna dati dal server">🔄</button>
-    <span id="sync-status" style="font-family:sans-serif;font-size:11px;font-weight:600;padding:3px 8px;border-radius:var(--radius);background:var(--surface2);color:var(--text3)" title="Stato sincronizzazione">☁ …</span>
-    <div id="presence-bar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap"></div>
     <button class="btn-primary" onclick="openSettings()" title="Impostazioni utenti">⚙️</button>
     <button class="btn-primary" onclick="doLogout()" title="Esci" style="color:var(--text3)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -674,6 +669,7 @@ body{font-family:Georgia,serif;background:var(--bg);color:var(--text);font-size:
     </div>
   </div>
 </div>
+
 <div class="toast" id="toast"></div>
 
 <!-- MODAL BATTAGLIA NAVALE (KONAMI) -->
@@ -738,9 +734,8 @@ function doLogin(){
     app.style.display='flex'; app.style.flexDirection='column';
     err.style.display='none';
     updateUserBadge();
-    // Renderizza subito, poi sync server in background
     setGridMode('camere');
-    loadFromServer(function(){ renderGrid(); sendHeartbeat(); renderPresence(); });
+    loadFromServer(function(){ renderGrid(); });
   } else {
     err.style.display='block';
     document.getElementById('login-pwd').value='';
@@ -775,9 +770,8 @@ function updateUserBadge(){
     var app=document.getElementById('app-content');
     app.style.display='flex'; app.style.flexDirection='column';
     setTimeout(updateUserBadge,50);
-    // Renderizza subito da localStorage, poi sync server in background
     setGridMode('camere');
-    loadFromServer(function(){ renderGrid(); if(selectedId) renderSidebar(); sendHeartbeat(); renderPresence(); });
+    loadFromServer(function(){ renderGrid(); if(selectedId) renderSidebar(); });
   } else {
     setTimeout(function(){document.getElementById('login-user').focus();},100);
   }
@@ -890,34 +884,21 @@ var GAS_URL = 'https://script.google.com/macros/s/AKfycbxZVyOjZZDT-5YW2nCs4jifW5
 var GAS_KEY = 'OrtopediaSP2026!';
 var _syncTimer = null;
 
-function setSyncStatus(s){
-  var el=document.getElementById('sync-status');
-  if(!el) return;
-  if(s==='ok')      { el.textContent='☁ Sync';    el.style.color='var(--green)';  el.style.background='var(--green-bg)'; }
-  else if(s==='err'){ el.textContent='⚠ Offline'; el.style.color='var(--yellow)'; el.style.background='var(--yellow-bg)'; }
-  else              { el.textContent='↻ Sync…';   el.style.color='var(--text3)';  el.style.background='var(--surface2)'; }
-}
-
 function syncToServer(){
-  if(!GAS_URL){ setSyncStatus('err'); return; }
+  if(!GAS_URL) return;
   clearTimeout(_syncTimer);
   _syncTimer=setTimeout(function(){
-    setSyncStatus('loading');
     var users=getUsers();
-    // no-cors: evita preflight CORS quando aperto da file://
     fetch(GAS_URL,{
       method:'POST',
-      mode:'no-cors',
       headers:{'Content-Type':'text/plain'},
       body:JSON.stringify({k:GAS_KEY, patients:patients, femori:femori, users:users})
-    }).then(function(){ setSyncStatus('ok'); })
-    .catch(function(){ setSyncStatus('err'); });
+    }).catch(function(e){ console.warn('sync error',e); });
   }, 800);
 }
 
 function loadFromServer(onDone){
   if(!GAS_URL){ if(onDone) onDone(); return; }
-  setSyncStatus('loading');
   fetch(GAS_URL+'?k='+GAS_KEY+'&_='+Date.now())
     .then(function(r){ return r.json(); })
     .then(function(d){
@@ -926,10 +907,9 @@ function loadFromServer(onDone){
       if(d.users&&typeof d.users==='object'&&Object.keys(d.users).length>0){
         localStorage.setItem('ortho_users',JSON.stringify(d.users));
       }
-      setSyncStatus('ok');
       if(onDone) onDone();
     })
-    .catch(function(){ setSyncStatus('err'); if(onDone) onDone(); });
+    .catch(function(){ if(onDone) onDone(); });
 }
 
 var patients = JSON.parse(localStorage.getItem('ortho_patients') || '[]');
@@ -2319,64 +2299,7 @@ setInterval(function(){
   });
 },1000);
 
-// ── PRESENZA UTENTI ───────────────────────────────────
-function sendHeartbeat(){
-  if (!currentUser) return;
-  var users = getUsers();
-  if (!users[currentUser]) return;
-  users[currentUser].lastSeen = Date.now();
-  saveUsersDB(users);
-}
-
-function getOnlineUsers(){
-  var users = getUsers();
-  var now = Date.now();
-  var online = [], offline = [];
-  Object.keys(users).forEach(function(u){
-    var last = users[u].lastSeen || 0;
-    var ago = (now - last) / 1000 / 60; // minuti
-    if (u === 'admin') return; // nascondi admin dalla lista
-    if (ago < 5) online.push(users[u].displayName || u);
-    else offline.push(users[u].displayName || u);
-  });
-  return {online: online, offline: offline};
-}
-
-function renderPresence(){
-  var el = document.getElementById('presence-bar');
-  if (!el) return;
-  var p = getOnlineUsers();
-  var html = '';
-  p.online.forEach(function(u){
-    html += '<span style="display:inline-flex;align-items:center;gap:4px;font-family:sans-serif;font-size:11px;font-weight:600;color:var(--green);background:var(--green-bg);padding:2px 8px;border-radius:20px">'
-          + '<span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block"></span>'
-          + u + '</span>';
-  });
-  p.offline.forEach(function(u){
-    html += '<span style="display:inline-flex;align-items:center;gap:4px;font-family:sans-serif;font-size:11px;color:var(--text3);background:var(--surface2);padding:2px 8px;border-radius:20px">'
-          + '<span style="width:7px;height:7px;border-radius:50%;background:var(--border2);display:inline-block"></span>'
-          + u + '</span>';
-  });
-  el.innerHTML = html;
-}
-
-// Heartbeat ogni 60 secondi
-setInterval(function(){
-  sendHeartbeat();
-  renderPresence();
-}, 60 * 1000);
-
-function manualRefresh(){
-  if(!currentUser) return;
-  var btn=document.getElementById('btn-refresh');
-  if(btn){ btn.textContent='⏳'; btn.disabled=true; }
-  loadFromServer(function(){
-    renderGrid();
-    if(selectedId) renderSidebar();
-    renderPresence();
-    if(btn){ btn.textContent='🔄'; btn.disabled=false; }
-  });
-}
+function renderPresence(){ /* single-user mode */ }
 
 // ── KONAMI CODE + BATTAGLIA NAVALE ────────────────────
 (function(){
@@ -2535,16 +2458,6 @@ function bnLog(msg){
 
 // ── INIT ──────────────────────────────────────────────
 setGridMode('camere');
-
-// Auto-refresh ogni 3 minuti
-setInterval(function(){
-  if (!currentUser) return;
-  loadFromServer(function(){
-    renderGrid();
-    if (selectedId) renderSidebar();
-    renderPresence();
-  });
-}, 3 * 60 * 1000);
 </script>
 </body>
 </html>
